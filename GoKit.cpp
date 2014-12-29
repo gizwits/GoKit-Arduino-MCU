@@ -1,8 +1,15 @@
+
 #include <Arduino.h>
+#include <DHT.h>
+#include <MsTimer2.h>
+#include <ChainableLED.h>
 #include <SoftwareSerial.h>
 #include "GoKit.h"
 
-
+DHT dht(DHTPIN, DHTTYPE);
+ChainableLED leds(A5, A4, 1);
+void motortime();
+unsigned char uart_buf[MAX_UART_LEN]={0};
 m2w_returnMcuInfo         m_m2w_returnMcuInfo;
 pro_commonCmd             m_pro_commonCmd;              //通用命令 心跳 ack等待复用
 m2w_setModule             m_m2w_setModule;              //配置模块
@@ -11,13 +18,21 @@ m2w_mcuStatus             m_m2w_mcuStatus;              //MCU当前状态
 m2w_mcuStatus             m_m2w_mcuStatus_reported;     //上次MCU的状态
 w2m_reportModuleStatus    m_w2m_reportModuleStatus;     //WIFI模组状态
 pro_errorCmd              m_pro_errorCmd;               //错误命令帧
-
+unsigned char SN = 0;
+unsigned long last_time=0;
 void GoKit_Init()
 {
   Serial.begin(9600);
-  mySerial.begin(9600);
-  attachInterrupt(0, WiFi_Config, RISING);//当int.0上升沿触发,触发中断函数sendrandNunberCom pin 2
-  attachInterrupt(1, WiFi_Reset, RISING);
+  dht.begin();
+  leds.init();
+  
+  pinMode(KEY1,INPUT_PULLUP); //KEY1 上拉输入
+  pinMode(KEY2,INPUT_PULLUP); //KEY2 上拉输入
+  attachInterrupt(0, gokit_IR_event, FALLING);//当int.0上升沿触发,触发中断函数gokit_IR_event pin 2
+  MsTimer2::set(500, gokit_timer); // 500ms period
+  MsTimer2::start();
+  gokit_motor_init();
+  gokit_setColorRGB(0,0,0);
   McuStatusInit();
 }
 /*******************************************************************************
@@ -67,8 +82,10 @@ void SendToUart(unsigned char  *buf, unsigned short packLen, unsigned char  tag)
   memset(&recv_commonCmd, 0, sizeof(pro_commonCmd));
   last_time  = gokit_time_ms();  
   Send_num = 1;
-  mySerial.print("restart send  timems");
-  mySerial.println(gokit_time_ms());  
+  #if(DEBUG==1)
+  Serial.print("restart send  timems");
+  Serial.println(gokit_time_ms());  
+  #endif
   while(Send_num <MAX_SEND_NUM )
   {
     if( (gokit_time_ms()-last_time)<MAX_SEND_TIME )
@@ -95,8 +112,10 @@ void SendToUart(unsigned char  *buf, unsigned short packLen, unsigned char  tag)
           Serial.write(buf[i]);
           if(i >=2 && buf[i] == 0xFF) Serial.write(m_55);    // add 0x55 while across 0xff except head. 
         }
-        mySerial.print("restart send  timems");
-        mySerial.println(gokit_time_ms());
+        #if(DEBUG==1)
+        Serial.print("restart send  timems");
+        Serial.println(gokit_time_ms());
+        #endif
     } 
   }
 }
@@ -157,7 +176,7 @@ int McuStatusInit()
   m_m2w_mcuStatus.head_part.head[0] = 0xFF;
   m_m2w_mcuStatus.head_part.head[1] = 0xFF;
   m_m2w_mcuStatus.head_part.len = exchangeBytes(sizeof(m2w_mcuStatus) - 4);
-  //DHT11_Read_Data((uint8_t *)&(m_m2w_mcuStatus.status_r.temputure), (uint8_t *)&(m_m2w_mcuStatus.status_r.humidity));
+  gokit_DHT11_Read_Data((uint8_t *)&(m_m2w_mcuStatus.status_r.temputure), (uint8_t *)&(m_m2w_mcuStatus.status_r.humidity));
   m_m2w_mcuStatus.status_w.motor_speed = 5;
   
   //
@@ -193,27 +212,32 @@ int get_onepackage(unsigned char *buf)
       unsigned char tempbuf[2];
       int ind=0,i=0;
       int remainlen=0;
-      int packlen=0;      
+      int packlen=0;     
+      
      while(Serial.available()>0)
     {           
       UartC = (unsigned char)Serial.read();
       
       if(ind<2)
       {
-        mySerial.println("i<2");
+        #if(DEBUG==1)
+        Serial.println("i<2");
+        #endif
         if( UartC!=0XFF ) continue;
       }
       if(ind==2) tempbuf[0] = UartC;
       if(ind==3) tempbuf[1] = UartC;
       if(ind>3) remainlen = (tempbuf[0]*256)+tempbuf[1];
-      
+     
       /* too long */
-      if(remainlen>1000) return 0;
+      if(remainlen>MAX_UART_LEN) return 0;
       /**** remove 0X55 ****/
-      
+     
       if(UartC==0X55 && buf[ind-1]==0XFF)
        {
-         mySerial.println("UartC==0X55 remove it");
+        #if(DEBUG==1)
+         Serial.println("UartC==0X55 remove it");
+        #endif
          continue;
        }
        buf[ind++] = UartC;
@@ -222,13 +246,15 @@ int get_onepackage(unsigned char *buf)
     }
     if(remainlen>0)
     {
-      mySerial.println("receive data is:");
+      #if(DEBUG==1)
+      Serial.println("receive data is:");
       for ( i=0;i<ind; i++ )
       {
-        mySerial.print(buf[i],HEX);
-        mySerial.print(" ");
+        Serial.print(buf[i],HEX);
+        Serial.print(" ");
       }
-      mySerial.println("");
+      Serial.println("");
+      #endif
     }
     /*error uart data*/
     if((packlen-4)!=remainlen) return 0;
@@ -243,7 +269,9 @@ int get_onepackage(unsigned char *buf)
 ******************************************************/
 void WiFi_Reset()
 {
-
+#if(DEBUG==1)
+  Serial.println("WiFi_Reset");
+ #endif 
 }
 /*******************************************************
  *    function      : WiFi_Config
@@ -271,7 +299,175 @@ unsigned long gokit_time_ms()
  *    return        : gokit running time(m).
  *    Add by Alex.lin    --2014-12-25
 ******************************************************/
-unsigned long gokit_time_m()
+unsigned long gokit_time_s()
 {
   return millis()/1000;
+}
+
+/*******************************************************
+ *    function      : gokit_DHT11_Read_Data
+ *    Description   : gokit read temperature and hum 
+ *    return        : gokit running time(m).
+ *    Add by Alex.lin    --2014-12-25
+******************************************************/
+
+void gokit_DHT11_Read_Data( unsigned char *temperature,unsigned char *humidity)
+{
+  *temperature = (unsigned char)dht.readTemperature();
+  *humidity = (unsigned char)dht.readHumidity();
+  return ;
+}
+/***************************************
+*
+*  return   :2-long-down 1-short-down 0-no
+*
+***************************************/
+char gokit_key1down()
+{
+  int unsigned long keep_time=0;
+  if( digitalRead(KEY1)==LOW)
+  {
+    delay(100);
+    if(digitalRead(KEY1)==LOW)
+    {
+      keep_time = gokit_time_s();
+      while(digitalRead(KEY1)==LOW)
+      {
+        if( (gokit_time_s()-keep_time)> KEY_LONG_TIMER)
+        {
+          return KEY1_LONG_PRESS;
+         }        
+      }//until open the key 
+      return KEY1_SHORT_PRESS ;
+    }
+    return 0;
+  }
+  return 0;
+}
+char gokit_key2down()
+{
+  int unsigned long keep_time=0;
+  if( digitalRead(KEY2)==LOW)
+  {
+    delay(100);
+    if(digitalRead(KEY2)==LOW)
+    {
+      keep_time = gokit_time_s();
+      while(digitalRead(KEY2)==LOW)//until open the key 
+      {
+
+        if( (gokit_time_s()-keep_time)> KEY_LONG_TIMER)
+        {
+          return KEY2_LONG_PRESS;
+         }  
+      }
+ 
+      return KEY2_SHORT_PRESS;
+    }
+    return 0;
+  }
+  return 0;
+}
+char gokit_keydown()
+{
+  char ret=0;
+  ret |= gokit_key2down();
+  ret |= gokit_key1down();
+  return ret;
+
+}
+void gokit_IR_event()
+{
+  noInterrupts();
+  Serial.println("gokit_IR_event!");
+  interrupts();
+}
+void gokit_setColorRGB(byte red, byte green, byte blue)
+{
+ leds.setColorRGB(0, red, green, blue); 
+}
+void gokit_motor_init()
+{
+  pinMode(MOTOR_PINA,OUTPUT);
+  pinMode(MOTOR_PINB,OUTPUT);
+  digitalWrite(MOTOR_PINB,LOW);
+  digitalWrite(MOTOR_PINA,LOW);
+
+  gokit_motorstatus(0);
+}
+void gokit_motorstatus( char motor_speed )
+{
+  /* 电机正转 */
+  if(motor_speed>=0)
+  {
+    digitalWrite(MOTOR_PINA,LOW);
+    analogWrite( MOTOR_PINB,motor_speed );
+  }
+  /* 电机反转 */
+  else
+  {
+    digitalWrite(MOTOR_PINA,HIGH);
+    analogWrite( MOTOR_PINB,(255-(-motor_speed)) );
+  }
+}
+
+void gokit_timer()
+{
+
+}
+void gokit_ResetWiFi()
+{
+    gokit_setColorRGB(0,0,50);
+    delay(500);
+    gokit_setColorRGB(0,0,0);  
+
+    m_pro_commonCmd.head_part.cmd = CMD_RESET_MODULE;
+    m_pro_commonCmd.head_part.sn = ++SN;
+    m_pro_commonCmd.sum = CheckSum((uint8_t *)&m_pro_commonCmd, sizeof(pro_commonCmd));
+    SendToUart((uint8_t *)&m_pro_commonCmd, sizeof(pro_commonCmd), 1);
+}
+void gokit_sendAirlink()
+{
+    gokit_setColorRGB(0,50,0);
+    m_m2w_setModule.config_info = 0x02;   //air link
+    m_m2w_setModule.head_part.sn = ++SN;
+    m_m2w_setModule.sum = CheckSum((uint8_t *)&m_m2w_setModule, sizeof(m2w_setModule));
+    SendToUart((uint8_t *)&m_m2w_setModule, sizeof(m2w_setModule), 1);
+}
+void gokit_sendApCmd()
+{
+    gokit_setColorRGB(50,0,0);
+    delay(500);
+    gokit_setColorRGB(0,0,0);   
+     
+    m_m2w_setModule.config_info = 0x01;   //air link
+    m_m2w_setModule.head_part.sn = ++SN;
+    m_m2w_setModule.sum = CheckSum((uint8_t *)&m_m2w_setModule, sizeof(m2w_setModule));
+    SendToUart((uint8_t *)&m_m2w_setModule, sizeof(m2w_setModule), 1);
+
+}
+void gokit_ReportStatus(uint8_t tag)
+{
+  if(tag == REPORT_STATUS)
+  {
+    m_m2w_mcuStatus.head_part.cmd = CMD_SEND_MODULE_P0;
+    m_m2w_mcuStatus.head_part.sn = ++SN;
+    m_m2w_mcuStatus.sub_cmd = SUB_CMD_REPORT_MCU_STATUS;
+    m_m2w_mcuStatus.status_w.motor_speed = exchangeBytes(m_m2w_mcuStatus.status_w.motor_speed);
+    m_m2w_mcuStatus.sum = CheckSum((uint8_t *)&m_m2w_mcuStatus, sizeof(m2w_mcuStatus));
+    SendToUart((uint8_t *)&m_m2w_mcuStatus, sizeof(m2w_mcuStatus), 1);
+  }
+  else if(tag == REQUEST_STATUS)
+  {
+    m_m2w_mcuStatus.head_part.cmd = CMD_SEND_MCU_P0_ACK;
+    m_m2w_mcuStatus.head_part.sn = m_w2m_controlMcu.head_part.sn;
+    m_m2w_mcuStatus.sub_cmd = SUB_CMD_REQUIRE_STATUS_ACK;
+    m_m2w_mcuStatus.status_w.motor_speed = exchangeBytes(m_m2w_mcuStatus.status_w.motor_speed);
+    m_m2w_mcuStatus.sum = CheckSum((uint8_t *)&m_m2w_mcuStatus, sizeof(m2w_mcuStatus));
+    SendToUart((uint8_t *)&m_m2w_mcuStatus, sizeof(m2w_mcuStatus), 0);
+  }
+    
+
+  m_m2w_mcuStatus.status_w.motor_speed = exchangeBytes(m_m2w_mcuStatus.status_w.motor_speed);
+  memcpy(&m_m2w_mcuStatus_reported, &m_m2w_mcuStatus, sizeof(m2w_mcuStatus));
 }

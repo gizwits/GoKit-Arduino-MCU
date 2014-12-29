@@ -30,12 +30,17 @@
 #define   CMD_MODULE_CMD_ERROR_ACK              0x11
 #define   CMD_MCU_CMD_ERROR_ACK                 0x12
 
+#define   GOKIT_REPORT_TIME                     20 // 20s
+#define   PASSCODE_TIME                         0
+
+
 #define	  PRO_VER       "00000004"
 #define	  P0_VER        "00000004"
 #define	  HARD_VER      "00000001"
 #define	  SOFT_VER      "00000001"
 #define   PRODUCT_KEY   "6f3074fe43894547a4f1314bd7e3ae0b"
-#define   PASSCODE_TIME  0
+
+
 
 typedef struct  _status_writable                status_writable;
 typedef struct  _status_readonly                status_readonly;
