@@ -31,8 +31,6 @@ void setup()
   Serial.println(freeMemory());
   #endif
 }
-int len=0,i=0;
-byte pos = 0;
 void loop()
 {  
   GoKit_Handle();

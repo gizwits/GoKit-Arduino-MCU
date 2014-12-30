@@ -8,6 +8,9 @@
 
 DHT dht(DHTPIN, DHTTYPE);
 ChainableLED leds(A5, A4, 1);
+#if(DEBUG==1)
+SoftwareSerial mySerial(8, 9);
+#endif
 void motortime();
 unsigned char uart_buf[MAX_UART_LEN]={0};
 m2w_returnMcuInfo         m_m2w_returnMcuInfo;
@@ -20,16 +23,25 @@ w2m_reportModuleStatus    m_w2m_reportModuleStatus;     //WIFI模组状态
 pro_errorCmd              m_pro_errorCmd;               //错误命令帧
 unsigned char SN = 0;
 unsigned long last_time=0;
+unsigned char hal_UartRxBuffer[UART_RX_BUF_SIZE];
+
+int hal_UartRxLen;
+int hal_dmatxhead, hal_dmatxtail;
+int hal_UartRxTail;
+int hal_UartRxHead;
 void GoKit_Init()
 {
   Serial.begin(9600);
+  #if(DEBUG==1)
+  mySerial.begin(9600);
+  #endif
   dht.begin();
   leds.init();
   
   pinMode(KEY1,INPUT_PULLUP); //KEY1 上拉输入
   pinMode(KEY2,INPUT_PULLUP); //KEY2 上拉输入
-  attachInterrupt(0, gokit_IR_event, FALLING);//当int.0上升沿触发,触发中断函数gokit_IR_event pin 2
-  MsTimer2::set(500, gokit_timer); // 500ms period
+  attachInterrupt(0, gokit_IR_event, CHANGE);//当引脚电平发生变化,触发中断函数gokit_IR_event pin 2
+  MsTimer2::set(1000, gokit_timer); // 1s period
   MsTimer2::start();
   gokit_motor_init();
   gokit_setColorRGB(0,0,0);
@@ -201,6 +213,27 @@ void CmdGetMcuInfo(uint8_t sn)
   SendToUart((uint8_t *)&m_m2w_returnMcuInfo, sizeof(m2w_returnMcuInfo), 0);  
 }
 /******************************************************
+ *    function    : serialEvent
+ *    Description : arduino serial uart receive  interrupt 
+ *                  function
+ *   
+ *    return      : none.
+ *    Add by Alex.lin    --2014-12-24
+******************************************************/
+void serialEvent()
+{
+   hal_UartRxBuffer[hal_UartRxTail] = (unsigned char)Serial.read();
+      hal_UartRxTail++;
+   if (hal_UartRxTail == UART_RX_BUF_SIZE)
+   {
+        hal_UartRxTail = 0;
+  }
+    hal_UartRxLen++;
+#if(DEBUG==1)  
+  Serial.println(hal_UartRxBuffer[hal_UartRxTail-1],HEX);
+#endif
+}
+/******************************************************
  *    function : get one gagetn uart package  
  *    buf      : uart receive buf. 
  *    return   : uart data length.
@@ -208,81 +241,82 @@ void CmdGetMcuInfo(uint8_t sn)
 ******************************************************/
 int get_onepackage(unsigned char *buf)
 {
-      unsigned char UartC;
-      unsigned char tempbuf[2];
-      int ind=0,i=0;
-      int remainlen=0;
-      int packlen=0;     
-      
-     while(Serial.available()>0)
-    {           
-      UartC = (unsigned char)Serial.read();
-      
-      if(ind<2)
-      {
-        #if(DEBUG==1)
-        Serial.println("i<2");
-        #endif
-        if( UartC!=0XFF ) continue;
-      }
-      if(ind==2) tempbuf[0] = UartC;
-      if(ind==3) tempbuf[1] = UartC;
-      if(ind>3) remainlen = (tempbuf[0]*256)+tempbuf[1];
-     
-      /* too long */
-      if(remainlen>MAX_UART_LEN) return 0;
-      /**** remove 0X55 ****/
-     
-      if(UartC==0X55 && buf[ind-1]==0XFF)
-       {
-        #if(DEBUG==1)
-         Serial.println("UartC==0X55 remove it");
-        #endif
-         continue;
-       }
-       buf[ind++] = UartC;
-      packlen++;
-      
-    }
-    if(remainlen>0)
+  int ret = 0;
+  int len = 0;
+  int i, head=0;
+  unsigned long receive_time=0;
+  if (hal_UartRxLen<4) // not have enough data yet.
+    goto done;
+
+    for (i=0, head=hal_UartRxHead; i+1<(int)hal_UartRxLen; i++) 
     {
-      #if(DEBUG==1)
-      Serial.println("receive data is:");
-      for ( i=0;i<ind; i++ )
+
+      if ((hal_UartRxBuffer[head] != 0xFF) || (hal_UartRxBuffer[(head+1)%UART_RX_BUF_SIZE] != 0xFF) )   
       {
-        Serial.print(buf[i],HEX);
-        Serial.print(" ");
-      }
-      Serial.println("");
-      #endif
+        head++;
+        if (head == UART_RX_BUF_SIZE) {
+          head = 0;
+        }
+      } else {
+          break;
+      } 
     }
-    /*error uart data*/
-    if((packlen-4)!=remainlen) return 0;
-    return packlen;
+  hal_UartRxLen -= i; 
+  hal_UartRxHead = head; // remove invalid data.
 
-}
-/*******************************************************
- *    function      : WiFi_Reset
- *    Description   : gokit reset the wifi. 
- *    return        : None.
- *    Add by Alex.lin    --2014-12-25
-******************************************************/
-void WiFi_Reset()
-{
-#if(DEBUG==1)
-  Serial.println("WiFi_Reset");
- #endif 
-}
-/*******************************************************
- *    function      : WiFi_Config
- *    Description   : Gonfig wifi into airlink
- *    return        : None.
- *    Add by Alex.lin    --2014-12-25
-******************************************************/
-void WiFi_Config()
-{
+  if (hal_UartRxLen<4) // not have enough data yet.
+    goto done;
 
+  // copy first 4 bytes to buf
+  head = hal_UartRxHead;
+  for (i = 0; i < 4; i++) 
+  {
+    buf[i] = hal_UartRxBuffer[head++];
+    if (head == UART_RX_BUF_SIZE) {
+      head = 0;
+    }
+  }
+
+    // total data length
+  len = (buf[2]<<8 )+ buf[3] + 4;
+  
+  if (len > UART_RX_BUF_SIZE) { // length to long, must wrong format
+    goto WRONG;
+  }
+    
+  if (len > (int)hal_UartRxLen)//
+    goto done; // not have enough data yet.
+
+  receive_time = gokit_time_s();
+    // copy data & checksum to buf
+  for (; i<len; i++) 
+  {
+    if((gokit_time_s()-receive_time) >1)
+    {
+      goto WRONG;//1S内没接收到全数据，跳出。
+    }
+    buf[i] = hal_UartRxBuffer[head];
+    head++;
+    if (head == UART_RX_BUF_SIZE) {
+      head = 0;
+    }
+  }
+  
+  ret = len;
+  hal_UartRxLen -= len;
+  hal_UartRxHead = head;
+  goto done;
+    
+WRONG: // wrong format, remove one byte
+  hal_UartRxLen--;
+  hal_UartRxHead++;
+  if (hal_UartRxHead == UART_RX_BUF_SIZE) {
+    hal_UartRxHead = 0;
+  }
+done:
+  return ret;
 }
+
 /*******************************************************
  *    function      : gokit_time_ms
  *    Description   : gokit running time form power on 
@@ -307,7 +341,7 @@ unsigned long gokit_time_s()
 /*******************************************************
  *    function      : gokit_DHT11_Read_Data
  *    Description   : gokit read temperature and hum 
- *    return        : gokit running time(m).
+ *    return        : none
  *    Add by Alex.lin    --2014-12-25
 ******************************************************/
 
@@ -317,12 +351,14 @@ void gokit_DHT11_Read_Data( unsigned char *temperature,unsigned char *humidity)
   *humidity = (unsigned char)dht.readHumidity();
   return ;
 }
-/***************************************
-*
-*  return   :2-long-down 1-short-down 0-no
-*
-***************************************/
-char gokit_key1down()
+/*******************************************************
+ *    function      : gokit_key1down
+ *    Description   : check the gokit key1 event 
+ *    return        : KEY1_LONG_PRESS  KEY1_SHORT_PRESS  
+ *                     0-no keydown event.
+ *    Add by Alex.lin    --2014-12-25
+******************************************************/
+ char gokit_key1down()
 {
   int unsigned long keep_time=0;
   if( digitalRead(KEY1)==LOW)
@@ -344,6 +380,13 @@ char gokit_key1down()
   }
   return 0;
 }
+/*******************************************************
+ *    function      : gokit_key2down
+ *    Description   : check the gokit key2 event 
+ *    return        : KEY2_LONG_PRESS  KEY2_SHORT_PRESS  
+ *                     0-no keydown event.
+ *    Add by Alex.lin    --2014-12-25
+******************************************************/
 char gokit_key2down()
 {
   int unsigned long keep_time=0;
@@ -368,6 +411,14 @@ char gokit_key2down()
   }
   return 0;
 }
+/*******************************************************
+ *    function      : gokit_keydown
+ *    Description   : check the gokit key1 or key2 event 
+ *    return        : KEY1_LONG_PRESS  KEY1_SHORT_PRESS 
+ *                    KEY2_LONG_PRESS  KEY2_SHORT_PRESS   
+ *                     0-no keydown event.
+ *    Add by Alex.lin    --2014-12-25
+******************************************************/
 char gokit_keydown()
 {
   char ret=0;
@@ -376,45 +427,99 @@ char gokit_keydown()
   return ret;
 
 }
+/*******************************************************
+ *    function      : gokit_IR_event
+ *    Description   : check the gokit infrared event 
+ *    return        : none 
+ *                   
+ *    Add by Alex.lin    --2014-12-25
+******************************************************/
 void gokit_IR_event()
 {
   noInterrupts();
-  Serial.println("gokit_IR_event!");
+  if(digitalRead(2))
+  {
+    #if (DEBUG==1)
+    Serial.println("gokit_IR_event! no happen. ");
+    #endif
+    m_m2w_mcuStatus.status_r.ir_status &= ~(1<<0);
+  }
+  else
+  {
+    #if (DEBUG==1)
+    Serial.println("gokit_IR_event! happen. ");
+    #endif
+    m_m2w_mcuStatus.status_r.ir_status |= (1<<0);
+  }
   interrupts();
 }
+/*******************************************************
+ *    function      : gokit_setColorRGB
+ *    Description   : set gokit colorrgb led
+ *    return        : none 
+ *                   
+ *    Add by Alex.lin    --2014-12-25
+******************************************************/
 void gokit_setColorRGB(byte red, byte green, byte blue)
 {
  leds.setColorRGB(0, red, green, blue); 
 }
+/*******************************************************
+ *    function      : gokit_motor_init
+ *    Description   : init gokit motor.
+ *    return        : none 
+ *                   
+ *    Add by Alex.lin    --2014-12-25
+******************************************************/
 void gokit_motor_init()
 {
   pinMode(MOTOR_PINA,OUTPUT);
   pinMode(MOTOR_PINB,OUTPUT);
   digitalWrite(MOTOR_PINB,LOW);
   digitalWrite(MOTOR_PINA,LOW);
-
-  gokit_motorstatus(0);
+  gokit_motorstatus(5);
 }
+/*******************************************************
+ *    function      : gokit_motorstatus
+ *    Description   : set gokit motor speed.
+ *    return        : none 
+ *                   
+ *    Add by Alex.lin    --2014-12-25
+******************************************************/
 void gokit_motorstatus( char motor_speed )
 {
-  /* 电机正转 */
-  if(motor_speed>=0)
+
+  unsigned char Temp_motor_speed=0;
+  if(motor_speed==5) //停止
   {
     digitalWrite(MOTOR_PINA,LOW);
-    analogWrite( MOTOR_PINB,motor_speed );
+    digitalWrite(MOTOR_PINB,LOW);
   }
-  /* 电机反转 */
-  else
+  if(motor_speed>5)//正转
   {
+    Temp_motor_speed = (motor_speed-5)*51;
+    if(Temp_motor_speed>255) Temp_motor_speed=255;
+    digitalWrite(MOTOR_PINA,LOW);
+    analogWrite( MOTOR_PINB, Temp_motor_speed);
+  }
+  if(motor_speed<5)//反转
+  {
+    Temp_motor_speed = (255-(5+motor_speed))*51;
+    if(Temp_motor_speed>255) Temp_motor_speed =255;
     digitalWrite(MOTOR_PINA,HIGH);
-    analogWrite( MOTOR_PINB,(255-(-motor_speed)) );
+    analogWrite( MOTOR_PINB,Temp_motor_speed );
   }
 }
 
 void gokit_timer()
 {
-
 }
+/*******************************************************
+ *    function      : gokit_ResetWiFi
+ *    Description   : gokit reset the wifi. 
+ *    return        : None.
+ *    Add by Alex.lin    --2014-12-25
+******************************************************/
 void gokit_ResetWiFi()
 {
     gokit_setColorRGB(0,0,50);
@@ -426,6 +531,12 @@ void gokit_ResetWiFi()
     m_pro_commonCmd.sum = CheckSum((uint8_t *)&m_pro_commonCmd, sizeof(pro_commonCmd));
     SendToUart((uint8_t *)&m_pro_commonCmd, sizeof(pro_commonCmd), 1);
 }
+/*******************************************************
+ *    function      : WiFi_Config
+ *    Description   : Gonfig wifi into airlink
+ *    return        : None.
+ *    Add by Alex.lin    --2014-12-25
+******************************************************/
 void gokit_sendAirlink()
 {
     gokit_setColorRGB(0,50,0);
@@ -455,7 +566,7 @@ void gokit_ReportStatus(uint8_t tag)
     m_m2w_mcuStatus.sub_cmd = SUB_CMD_REPORT_MCU_STATUS;
     m_m2w_mcuStatus.status_w.motor_speed = exchangeBytes(m_m2w_mcuStatus.status_w.motor_speed);
     m_m2w_mcuStatus.sum = CheckSum((uint8_t *)&m_m2w_mcuStatus, sizeof(m2w_mcuStatus));
-    SendToUart((uint8_t *)&m_m2w_mcuStatus, sizeof(m2w_mcuStatus), 1);
+    SendToUart((uint8_t *)&m_m2w_mcuStatus, sizeof(m2w_mcuStatus), 0);
   }
   else if(tag == REQUEST_STATUS)
   {

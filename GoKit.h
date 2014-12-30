@@ -27,12 +27,14 @@
 #define   MAX_SEND_NUM    3   
 #define   MAX_SEND_TIME   200
 #define   MAX_UART_LEN    100
+#define   UART_RX_BUF_SIZE 100
 
 extern  unsigned char uart_buf[MAX_UART_LEN];
 extern SoftwareSerial mySerial;
 extern DHT dht;
 extern unsigned long last_time;
 extern m2w_returnMcuInfo m_m2w_returnMcuInfo;
+extern w2m_controlMcu            m_w2m_controlMcu;             //控制MCU
 extern m2w_mcuStatus             m_m2w_mcuStatus;              //MCU当前状态
 extern m2w_mcuStatus             m_m2w_mcuStatus_reported;     //上次MCU的状态
 extern w2m_reportModuleStatus    m_w2m_reportModuleStatus;     //WIFI模组状态

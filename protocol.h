@@ -30,7 +30,12 @@
 #define   CMD_MODULE_CMD_ERROR_ACK              0x11
 #define   CMD_MCU_CMD_ERROR_ACK                 0x12
 
-#define   GOKIT_REPORT_TIME                     20 // 20s
+#define   SUB_CMD_CONTROL_MCU                   0x01
+#define   SUB_CMD_REQUIRE_STATUS                0x02
+#define   SUB_CMD_REQUIRE_STATUS_ACK            0x03
+#define   SUB_CMD_REPORT_MCU_STATUS             0x04
+
+#define   GOKIT_REPORT_TIME                     10 // 20s
 #define   PASSCODE_TIME                         0
 
 
