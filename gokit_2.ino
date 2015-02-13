@@ -23,7 +23,7 @@ void setup()
 
   GoKit_Init();
   oled.ssd1306_init(SSD1306_SWITCHCAPVCC);
-  oled.drawstring(0,3,"   ---- GoKit ----   ");
+  oled.drawstring(0,3,"     Hello World!   ");
   oled.display();
   #if (DEBUG==1)
   Serial.println("GoKit init  OK!");
