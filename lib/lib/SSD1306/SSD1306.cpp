@@ -12,7 +12,7 @@
 static uint8_t is_reversed = 0;
 
 // a 5x7 font table
-extern uint8_t PROGMEM font[];
+extern const uint8_t PROGMEM font[];
 
 // the memory buffer for the LCD
 
